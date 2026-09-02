@@ -1,5 +1,6 @@
 import streamlit as st
 
+st.image("chalex_network.png", use_container_width=True)
 st.set_page_config(page_title="CHALEX-MDA", page_icon="⚡", layout="wide")
 st.title("⚡ CHALEX-MDA")
 st.caption("Corte / Monitoreo y Cambio de Turno en una sola aplicación. CONFIG_MDA controla sites monitoreados y accesos.")
