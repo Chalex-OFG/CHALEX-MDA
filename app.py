@@ -2,14 +2,14 @@ import streamlit as st
 
 st.set_page_config(page_title="CHALEX-MDA", page_icon="⚡", layout="wide")
 st.title("⚡ CHALEX-MDA")
-st.caption("Corte / Monitoreo y Cambio de Turno en una sola aplicación.")
+st.caption("Corte / Monitoreo y Cambio de Turno en una sola aplicación. CONFIG_MDA controla sites monitoreados y accesos.")
 
 with st.sidebar:
     st.header("📂 Carga única de datos")
     shared_energy = st.file_uploader("1. Site Energy Dashboard", type=["xlsx", "xls"], key="shared_energy")
     shared_alarms = st.file_uploader("2. Current Alarms", type=["xlsx", "xls"], key="shared_alarms")
     shared_wos = st.file_uploader("3. WOs List", type=["xlsx", "xls"], key="shared_wos")
-    shared_access = st.file_uploader("4. Accesos (opcional)", type=["xlsx", "xls"], key="shared_access")
+    shared_config = st.file_uploader("4. CONFIG_MDA.xlsx (opcional)", type=["xlsx", "xls"], key="shared_config")
     st.divider()
     modulo = st.radio("Módulo", ["📊 Corte / Monitoreo", "🔄 Cambio de Turno"])
 
@@ -154,6 +154,45 @@ if modulo == "📊 Corte / Monitoreo":
             candidates.sort(reverse=True)
             return candidates[0][1]
         return None
+
+
+    # =========================================================
+    # CONFIG_MDA.xlsx
+    # =========================================================
+
+    monitored_site_keys = set()
+
+    if shared_config is not None:
+        try:
+            xcfg = pd.ExcelFile(shared_config)
+
+            if "SITES_MONITOREADOS" in xcfg.sheet_names:
+                sdf = pd.read_excel(
+                    shared_config,
+                    sheet_name="SITES_MONITOREADOS"
+                ).dropna(axis=1, how="all")
+
+                site_col_cfg = find_col(
+                    sdf.columns,
+                    ["SITIO", "Nombre de Site", "SITE"]
+                )
+
+                if site_col_cfg:
+                    for v in sdf[site_col_cfg]:
+                        if clean_text(v):
+                            monitored_site_keys.add(site_key(v))
+                else:
+                    st.warning(
+                        "CONFIG_MDA → SITES_MONITOREADOS: "
+                        "no encontré la columna SITIO."
+                    )
+            else:
+                st.warning(
+                    "CONFIG_MDA no contiene la hoja SITES_MONITOREADOS."
+                )
+
+        except Exception as exc:
+            st.warning(f"No pude leer SITES_MONITOREADOS: {exc}")
 
     # =========================================================
     # GOOGLE SHEETS - COMENTARIOS MDA
@@ -303,6 +342,13 @@ if modulo == "📊 Corte / Monitoreo":
     base = base.drop_duplicates(subset=["SITIO"], keep="first").copy()
 
     base["_SITE_KEY"] = base["SITIO"].apply(site_key)
+
+    # Si se cargó CONFIG_MDA, solo estos sites forman parte del monitoreo.
+    if monitored_site_keys:
+        base = base[
+            base["_SITE_KEY"].isin(monitored_site_keys)
+        ].copy()
+
     base["_REGION_CODE"] = base["SITIO"].apply(region_code)
     base["_CM_KEY"] = base["WO"].apply(normalize_cm)
 
@@ -715,6 +761,22 @@ if modulo == "📊 Corte / Monitoreo":
     else:
         unmatched = unmatched_alarm_rows.copy()
 
+        # Solo mostrar alarmas pendientes.
+        unmatched = unmatched[
+            unmatched["STATUS DE LA ALARMA"]
+            .astype(str)
+            .map(normalize)
+            .eq("uncleared")
+        ]
+
+        # Si existe lista maestra, solo mostrar los sites que sí monitoreamos.
+        if monitored_site_keys:
+            unmatched = unmatched[
+                unmatched["ALARM SOURCE"]
+                .apply(site_key)
+                .isin(monitored_site_keys)
+            ]
+
         # El filtro Departamento afecta también al segundo cuadro
         if f_dep:
             selected_codes = set()
@@ -1037,6 +1099,18 @@ else:
             "unschuduled", "unshuduled"
         ])
 
+        # Si CONFIG_MDA define una lista de sites monitoreados,
+        # solo esos Unscheduled se consideran en SITIOS EN MONITOREO.
+        if monitored_turno_keys:
+            site_keys_turno = df["SITE"].astype(str).apply(
+                lambda x: normalize(
+                    re.sub(r"^\s*[0-9]+_?", "", clean(x))
+                )
+            )
+            monitor_mask = monitor_mask & site_keys_turno.isin(
+                monitored_turno_keys
+            )
+
         # Solo para el REPORTE GENERAL:
         # de todos los Unscheduled, mostrar únicamente:
         # 1) criticidad alta, o
@@ -1118,7 +1192,7 @@ else:
     # =========================
 
     uploaded = shared_wos
-    access_file = shared_access
+    config_file = shared_config
 
     if uploaded is None:
         st.info("Carga WOs List desde la barra lateral.")
@@ -1176,26 +1250,79 @@ else:
     work["ESTADO_ACCESO"] = ""
     work["OBSERVACION_ACCESO"] = ""
 
-    if access_file is not None:
+    monitored_turno_keys = set()
+
+    if config_file is not None:
         try:
-            adf = pd.read_excel(access_file).dropna(axis=1, how="all")
-            sc = auto_match(adf.columns, ["SITIO", "Nombre de Site", "SITE"])
-            ac = auto_match(adf.columns, ["ESTADO ACCESO", "Estado de acceso", "ACCESO"])
-            oc = auto_match(adf.columns, ["OBSERVACIÓN", "OBSERVACION", "Comentario", "NOTA"])
-            if sc is None or ac is None:
-                st.warning("El Excel de accesos necesita las columnas SITIO y ESTADO ACCESO.")
-            else:
-                amap = {}
-                for _, ar in adf.iterrows():
-                    k = normalize(clean(ar[sc]))
-                    if k:
-                        amap[k] = (clean(ar[ac]), clean(ar[oc]) if oc else "")
-                for i in work.index:
-                    info = amap.get(normalize(clean(work.at[i, "SITE"])))
-                    if info:
-                        work.at[i, "ESTADO_ACCESO"], work.at[i, "OBSERVACION_ACCESO"] = info
+            xcfg = pd.ExcelFile(config_file)
+
+            # Hoja ACCESOS
+            if "ACCESOS" in xcfg.sheet_names:
+                adf = pd.read_excel(
+                    config_file,
+                    sheet_name="ACCESOS"
+                ).dropna(axis=1, how="all")
+
+                sc = auto_match(adf.columns, ["SITIO", "Nombre de Site", "SITE"])
+                ac = auto_match(adf.columns, ["ESTADO ACCESO", "Estado de acceso", "ACCESO"])
+                oc = auto_match(adf.columns, ["OBSERVACIÓN", "OBSERVACION", "Comentario", "NOTA"])
+
+                if sc is None or ac is None:
+                    st.warning(
+                        "CONFIG_MDA → ACCESOS necesita las columnas "
+                        "SITIO y ESTADO ACCESO."
+                    )
+                else:
+                    amap = {}
+                    for _, ar in adf.iterrows():
+                        k = normalize(
+                            re.sub(r"^\s*[0-9]+_?", "", clean(ar[sc]))
+                        )
+                        if k:
+                            amap[k] = (
+                                clean(ar[ac]),
+                                clean(ar[oc]) if oc else ""
+                            )
+
+                    for i in work.index:
+                        k = normalize(
+                            re.sub(
+                                r"^\s*[0-9]+_?",
+                                "",
+                                clean(work.at[i, "SITE"])
+                            )
+                        )
+                        info = amap.get(k)
+                        if info:
+                            work.at[i, "ESTADO_ACCESO"], work.at[i, "OBSERVACION_ACCESO"] = info
+
+            # Hoja SITES_MONITOREADOS
+            if "SITES_MONITOREADOS" in xcfg.sheet_names:
+                sdf = pd.read_excel(
+                    config_file,
+                    sheet_name="SITES_MONITOREADOS"
+                ).dropna(axis=1, how="all")
+
+                scc = auto_match(
+                    sdf.columns,
+                    ["SITIO", "Nombre de Site", "SITE"]
+                )
+
+                if scc:
+                    for v in sdf[scc]:
+                        if clean(v):
+                            monitored_turno_keys.add(
+                                normalize(
+                                    re.sub(
+                                        r"^\s*[0-9]+_?",
+                                        "",
+                                        clean(v)
+                                    )
+                                )
+                            )
+
         except Exception as exc:
-            st.warning(f"No pude leer el Excel de accesos: {exc}")
+            st.warning(f"No pude leer CONFIG_MDA.xlsx: {exc}")
 
     # =========================
     # SALIDA GENERAL
