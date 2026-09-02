@@ -997,6 +997,9 @@ else:
         "CRITICIDAD": [
             "Fault Level"
         ],
+        "PRIORIDAD_SITE": [
+            "Prioridad del Site"
+        ],
     }
 
     def short_technician_name(value):
@@ -1094,27 +1097,42 @@ else:
         closed_mask = state_norm.eq("closed")
         course_mask = state_norm.isin(["dispatched", "accepted", "inprocess"])
         # SITIOS EN MONITOREO siempre parte de los Unscheduled.
-        monitor_mask = state_norm.isin([
+        unscheduled_mask = state_norm.isin([
             "unscheduled", "uncheduled", "uncheluded", "unschedule",
             "unschuduled", "unshuduled"
         ])
 
-        # Si CONFIG_MDA define una lista de sites monitoreados,
-        # solo esos Unscheduled se consideran en SITIOS EN MONITOREO.
+        # Regla obligatoria:
+        # Todo ticket Unscheduled asociado a un site P0, P0+ o P1
+        # debe monitorearse sí o sí.
+        priority_norm = (
+            df["PRIORIDAD_SITE"]
+            .astype(str)
+            .str.upper()
+            .str.replace(" ", "", regex=False)
+        )
+        mandatory_priority = priority_norm.isin(["P0", "P0+", "P1"])
+
+        monitor_mask = unscheduled_mask.copy()
+
+        # CONFIG_MDA normalmente limita qué sites se monitorean,
+        # PERO P0 / P0+ / P1 tienen prioridad sobre esa lista y entran sí o sí.
         if monitored_turno_keys:
             site_keys_turno = df["SITE"].astype(str).apply(
                 lambda x: normalize(
                     re.sub(r"^\s*[0-9]+_?", "", clean(x))
                 )
             )
-            monitor_mask = monitor_mask & site_keys_turno.isin(
-                monitored_turno_keys
+            listed_site = site_keys_turno.isin(monitored_turno_keys)
+            monitor_mask = unscheduled_mask & (
+                listed_site | mandatory_priority
             )
 
-        # Solo para el REPORTE GENERAL:
-        # de todos los Unscheduled, mostrar únicamente:
-        # 1) criticidad alta, o
-        # 2) tipo de tarea relacionado con ausencia de energía.
+        # REPORTE GENERAL:
+        # Mostrar Unscheduled cuando cumpla cualquiera de estas reglas:
+        # - Fault Level = Media o Alta
+        # - Tipo tarea contiene "Ausencia"
+        # - Prioridad del Site = P0, P0+ o P1 (obligatorio)
         if filtrar_monitoreo_general:
             criticality_norm = df["CRITICIDAD"].astype(str).map(normalize)
             task_type_norm = df["TIPO_TAREA"].astype(str).map(normalize)
@@ -1125,17 +1143,19 @@ else:
                 na=False
             )
 
-            # También incluir cualquier Unscheduled cuyo "Tipo de tarea"
-            # contenga la palabra "Ausencia".
             ausencia = task_type_norm.str.contains(
                 r"\bausencia\b",
                 regex=True,
                 na=False
             )
 
-            monitor_mask = monitor_mask & (
-                medium_or_high_criticality | ausencia
+            general_rule = (
+                medium_or_high_criticality
+                | ausencia
+                | mandatory_priority
             )
+
+            monitor_mask = monitor_mask & general_rule
 
         sections = []
 
@@ -1234,6 +1254,7 @@ else:
         "SITE": df[mapping["SITE"]],
         "TECNICO": df[mapping["TECNICO"]],
         "TIPO_TAREA": df[mapping["TIPO_TAREA"]],
+        "PRIORIDAD_SITE": df[mapping["PRIORIDAD_SITE"]],
     })
 
     if mapping.get("DEPARTAMENTO"):
@@ -1401,7 +1422,7 @@ else:
 
     with st.expander("Ver columnas detectadas"):
         st.caption(
-            "Columnas confirmadas: Estado = Estado de la tarea (WO State) | CM = Número de WO | Site = Nombre de Site | Técnico = Nombre de personal FLM asignado | Criticidad = Fault Level | Ausencia = Tipo tarea"
+            "Columnas confirmadas: Estado = Estado de la tarea (WO State) | CM = Número de WO | Site = Nombre de Site | Técnico = Nombre de personal FLM asignado | Criticidad = Fault Level | Prioridad = Prioridad del Site | Ausencia = Tipo tarea"
         )
         detected = pd.DataFrame({
             "Campo": list(mapping.keys()),
