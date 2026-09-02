@@ -1115,8 +1115,9 @@ else:
 
         monitor_mask = unscheduled_mask.copy()
 
-        # CONFIG_MDA normalmente limita qué sites se monitorean,
-        # PERO P0 / P0+ / P1 tienen prioridad sobre esa lista y entran sí o sí.
+        # REGLA PRINCIPAL:
+        # Solo se monitorean sites incluidos en SITES_MONITOREADOS.
+        # La prioridad P0/P0+/P1 NO permite saltarse esta lista.
         if monitored_turno_keys:
             site_keys_turno = df["SITE"].astype(str).apply(
                 lambda x: normalize(
@@ -1124,15 +1125,16 @@ else:
                 )
             )
             listed_site = site_keys_turno.isin(monitored_turno_keys)
-            monitor_mask = unscheduled_mask & (
-                listed_site | mandatory_priority
-            )
+            monitor_mask = unscheduled_mask & listed_site
 
         # REPORTE GENERAL:
         # Mostrar Unscheduled cuando cumpla cualquiera de estas reglas:
         # - Fault Level = Media o Alta
         # - Tipo tarea contiene "Ausencia"
-        # - Prioridad del Site = P0, P0+ o P1 (obligatorio)
+        # - Prioridad del Site = P0, P0+ o P1
+        #
+        # P0/P0+/P1 evita el filtro de criticidad/ausencia,
+        # pero NUNCA evita el filtro de SITES_MONITOREADOS.
         if filtrar_monitoreo_general:
             criticality_norm = df["CRITICIDAD"].astype(str).map(normalize)
             task_type_norm = df["TIPO_TAREA"].astype(str).map(normalize)
