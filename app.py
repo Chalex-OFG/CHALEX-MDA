@@ -1,9 +1,6 @@
 import streamlit as st
 
-st.image("chalex_network.png", use_container_width=True)
-st.set_page_config(page_title="CHALEX-MDA", page_icon="⚡", layout="wide")
-st.title("⚡ CHALEX-MDA")
-st.caption("Corte / Monitoreo y Cambio de Turno en una sola aplicación. CONFIG_MDA controla sites monitoreados y accesos.")
+st.set_page_config(page_title="CHALEX-MDA V5", page_icon="⚡", layout="wide")
 
 with st.sidebar:
     st.header("📂 Carga única de datos")
@@ -1001,6 +998,16 @@ else:
         "PRIORIDAD_SITE": [
             "Prioridad del Site"
         ],
+        "HORA_TICKET": [
+            "First Occurred",
+            "First Occurrence",
+            "Fecha de creación",
+            "Fecha de creacion",
+            "Created Time",
+            "Creation Time",
+            "Hora del ticket",
+            "Hora Ticket"
+        ],
     }
 
     def short_technician_name(value):
@@ -1235,7 +1242,7 @@ else:
 
     missing = [
         field for field, col in mapping.items()
-        if col is None and field not in ["DEPARTAMENTO", "CRITICIDAD"]
+        if col is None and field not in ["DEPARTAMENTO", "CRITICIDAD", "HORA_TICKET"]
     ]
 
     if missing:
@@ -1259,6 +1266,11 @@ else:
         "TIPO_TAREA": df[mapping["TIPO_TAREA"]],
         "PRIORIDAD_SITE": df[mapping["PRIORIDAD_SITE"]],
     })
+
+    if mapping.get("HORA_TICKET"):
+        work["HORA_TICKET"] = df[mapping["HORA_TICKET"]]
+    else:
+        work["HORA_TICKET"] = pd.NaT
 
     if mapping.get("DEPARTAMENTO"):
         work["DEPARTAMENTO"] = df[mapping["DEPARTAMENTO"]].apply(clean)
@@ -1347,6 +1359,179 @@ else:
 
         except Exception as exc:
             st.warning(f"No pude leer CONFIG_MDA.xlsx: {exc}")
+
+
+    # =========================
+    # SEGUIMIENTO DE TICKETS
+    # =========================
+
+    st.divider()
+    st.subheader("🎫 Seguimiento de tickets")
+
+    def site_key_turno(value):
+        text = clean(value)
+        if not text:
+            return ""
+        suffix = re.sub(r"^\s*[0-9]+_?", "", text).strip()
+        return normalize(suffix if suffix else text)
+
+    energy_status_by_site = {}
+    if shared_energy is not None:
+        try:
+            shared_energy.seek(0)
+            edf = pd.read_excel(shared_energy).dropna(axis=1, how="all")
+            if "Site Name" in edf.columns and "Energy Site Status" in edf.columns:
+                for _, er in edf.iterrows():
+                    k = site_key_turno(er["Site Name"])
+                    if k:
+                        energy_status_by_site[k] = clean(er["Energy Site Status"]) or "-"
+        except Exception as exc:
+            st.warning(f"No pude cruzar Energy Dashboard para seguimiento de tickets: {exc}")
+
+    active_alarm_by_site = {}
+    if shared_alarms is not None:
+        try:
+            shared_alarms.seek(0)
+            raw = pd.read_excel(shared_alarms, header=None, nrows=25)
+            target = {
+                normalize("Name"),
+                normalize("Alarm Source"),
+                normalize("Clearance Status")
+            }
+            header_row = 0
+            for i in range(len(raw)):
+                vals = {
+                    normalize(v)
+                    for v in raw.iloc[i].tolist()
+                    if clean(v)
+                }
+                if target.issubset(vals):
+                    header_row = i
+                    break
+
+            shared_alarms.seek(0)
+            cadf = pd.read_excel(
+                shared_alarms,
+                header=header_row
+            ).dropna(axis=1, how="all")
+
+            if all(c in cadf.columns for c in ["Name", "Alarm Source", "Clearance Status"]):
+                cadf = cadf[
+                    cadf["Clearance Status"]
+                    .astype(str)
+                    .map(normalize)
+                    .eq("uncleared")
+                ].copy()
+
+                cadf["_SITE_KEY"] = cadf["Alarm Source"].apply(site_key_turno)
+
+                for k, grp in cadf.groupby("_SITE_KEY"):
+                    alarms_list = []
+                    for value in grp["Name"]:
+                        name = clean(value)
+                        if name and name not in alarms_list:
+                            alarms_list.append(name)
+                    if k:
+                        active_alarm_by_site[k] = " / ".join(alarms_list) if alarms_list else "-"
+        except Exception as exc:
+            st.warning(f"No pude cruzar Current Alarms para seguimiento de tickets: {exc}")
+
+    ticket_rows = []
+
+    for _, tr in work.iterrows():
+        site = clean(tr["SITE"])
+        k = site_key_turno(site)
+
+        if monitored_turno_keys and k not in monitored_turno_keys:
+            continue
+
+        ticket_dt = pd.to_datetime(
+            tr.get("HORA_TICKET"),
+            errors="coerce",
+            dayfirst=True
+        )
+
+        ticket_rows.append({
+            "CM": clean(tr["CM"]) or "-",
+            "STATUS CM": clean(tr["ESTADO"]) or "-",
+            "SITE": site or "-",
+            "PRIORIDAD": clean(tr["PRIORIDAD_SITE"]) or "-",
+            "TIPO TAREA": clean(tr["TIPO_TAREA"]) or "-",
+            "ALARMA ACTIVA": active_alarm_by_site.get(k, "-"),
+            "ESTADO ENERGY": energy_status_by_site.get(k, "-"),
+            "TECNICO": short_technician_name(tr["TECNICO"]),
+            "HORA TICKET": (
+                ticket_dt.strftime("%d/%m/%Y %H:%M")
+                if pd.notna(ticket_dt)
+                else "-"
+            ),
+            "_DT_TICKET": ticket_dt,
+        })
+
+    ticket_table = pd.DataFrame(ticket_rows)
+
+    if ticket_table.empty:
+        st.info("No hay tickets de sites monitoreados para mostrar.")
+    else:
+        ticket_table = ticket_table.sort_values(
+            "_DT_TICKET",
+            ascending=True,
+            na_position="last"
+        ).reset_index(drop=True)
+
+        tf1, tf2, tf3 = st.columns(3)
+
+        with tf1:
+            ticket_status_filter = st.multiselect(
+                "Status CM",
+                sorted([x for x in ticket_table["STATUS CM"].dropna().unique() if clean(x)]),
+                key="ticket_status_filter"
+            )
+
+        with tf2:
+            ticket_priority_filter = st.multiselect(
+                "Prioridad ticket",
+                sorted([x for x in ticket_table["PRIORIDAD"].dropna().unique() if clean(x)]),
+                key="ticket_priority_filter"
+            )
+
+        with tf3:
+            ticket_search = st.text_input(
+                "Buscar CM o SITE",
+                key="ticket_search"
+            )
+
+        ticket_view = ticket_table.copy()
+
+        if ticket_status_filter:
+            ticket_view = ticket_view[
+                ticket_view["STATUS CM"].isin(ticket_status_filter)
+            ]
+
+        if ticket_priority_filter:
+            ticket_view = ticket_view[
+                ticket_view["PRIORIDAD"].isin(ticket_priority_filter)
+            ]
+
+        if ticket_search.strip():
+            q = re.escape(ticket_search.strip())
+            ticket_view = ticket_view[
+                ticket_view["CM"].astype(str).str.contains(q, case=False, na=False)
+                |
+                ticket_view["SITE"].astype(str).str.contains(q, case=False, na=False)
+            ]
+
+        st.dataframe(
+            ticket_view.drop(columns=["_DT_TICKET"], errors="ignore"),
+            use_container_width=True,
+            hide_index=True,
+            height=430
+        )
+
+        st.caption(
+            "WOs List manda el ticket y su estado. Current Alarms añade alarmas Uncleared "
+            "y Energy Dashboard indica si el site ya aparece Cargando, Descargando o Caído."
+        )
 
     # =========================
     # SALIDA GENERAL
