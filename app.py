@@ -291,9 +291,9 @@ if modulo == "📊 Corte / Monitoreo":
     alarms_file = shared_alarms
     wos_file = shared_wos
 
-    #if energy_file is None:
-       # st.info("Carga Site Energy Dashboard desde la barra lateral.")
-       # st.stop()
+    if energy_file is None:
+        st.info("Carga Site Energy Dashboard desde la barra lateral.")
+        st.stop()
 
     # =========================================================
     # ENERGY DASHBOARD
@@ -1225,9 +1225,9 @@ else:
     uploaded = shared_wos
     config_file = shared_config
 
-    #if uploaded is None:
-        #st.info("Carga WOs List desde la barra lateral.")
-        #st.stop()
+    if uploaded is None:
+        st.info("Carga WOs List desde la barra lateral.")
+        st.stop()
 
     try:
         xls = pd.ExcelFile(uploaded)
