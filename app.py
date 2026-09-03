@@ -3,7 +3,7 @@ import streamlit as st
 # =========================================================
 # CONFIG_MDA ONLINE - GOOGLE SHEETS (GLOBAL)
 # =========================================================
-CONFIG_MDA_SHEET_ID = "1Lvsb31aFps3FaJiURH_pqGQHqpsotmEU505L32OeF2E"
+CONFIG_MDA_SHEET_ID = "1Lvsb31aFps3FaJjURH_pqGQHqpsotmEU505L32OeF2E"
 
 @st.cache_data(ttl=60, show_spinner=False)
 def read_config_sheet(sheet_name):
