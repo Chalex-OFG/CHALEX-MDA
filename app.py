@@ -1,6 +1,5 @@
 import streamlit as st
 
-st.image("chalex_network.png", use_container_width=True)
 st.set_page_config(page_title="CHALEX-MDA V5", page_icon="⚡", layout="wide")
 
 with st.sidebar:
