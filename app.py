@@ -1,13 +1,12 @@
 import streamlit as st
 
-st.set_page_config(page_title="CHALEX-MDA V6", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="CHALEX-MDA V7", page_icon="⚡", layout="wide")
 
 with st.sidebar:
     st.header("📂 Carga única de datos")
     shared_energy = st.file_uploader("1. Site Energy Dashboard", type=["xlsx", "xls"], key="shared_energy")
     shared_alarms = st.file_uploader("2. Current Alarms", type=["xlsx", "xls"], key="shared_alarms")
     shared_wos = st.file_uploader("3. WOs List", type=["xlsx", "xls"], key="shared_wos")
-    shared_config = st.file_uploader("4. CONFIG_MDA.xlsx (opcional)", type=["xlsx", "xls"], key="shared_config")
     st.divider()
     modulo = st.radio("Módulo", ["📊 Corte / Monitoreo", "🔄 Cambio de Turno"])
 
@@ -155,42 +154,49 @@ if modulo == "📊 Corte / Monitoreo":
 
 
     # =========================================================
-    # CONFIG_MDA.xlsx
+    # CONFIG_MDA ONLINE - GOOGLE SHEETS
     # =========================================================
+
+    CONFIG_MDA_SHEET_ID = "1Lvsb31aFps3FaJiURH_pqGOHqpxotmEU505L320eF2E"
+
+    @st.cache_data(ttl=60, show_spinner=False)
+    def read_config_sheet(sheet_name):
+        """
+        Lee una pestaña pública de CONFIG_MDA_ONLINE.
+        Se actualiza como máximo cada 60 segundos.
+        """
+        from urllib.parse import quote
+        url = (
+            f"https://docs.google.com/spreadsheets/d/{CONFIG_MDA_SHEET_ID}/"
+            f"gviz/tq?tqx=out:csv&sheet={quote(sheet_name)}"
+        )
+        return pd.read_csv(url).dropna(axis=1, how="all")
 
     monitored_site_keys = set()
 
-    if shared_config is not None:
-        try:
-            xcfg = pd.ExcelFile(shared_config)
+    try:
+        sdf = read_config_sheet("SITES_MONITOREADOS")
 
-            if "SITES_MONITOREADOS" in xcfg.sheet_names:
-                sdf = pd.read_excel(
-                    shared_config,
-                    sheet_name="SITES_MONITOREADOS"
-                ).dropna(axis=1, how="all")
+        site_col_cfg = find_col(
+            sdf.columns,
+            ["SITIO", "Nombre de Site", "SITE"]
+        )
 
-                site_col_cfg = find_col(
-                    sdf.columns,
-                    ["SITIO", "Nombre de Site", "SITE"]
-                )
+        if site_col_cfg:
+            for v in sdf[site_col_cfg]:
+                if clean_text(v):
+                    monitored_site_keys.add(site_key(v))
+        else:
+            st.warning(
+                "CONFIG_MDA_ONLINE → SITES_MONITOREADOS: "
+                "no encontré la columna SITIO."
+            )
 
-                if site_col_cfg:
-                    for v in sdf[site_col_cfg]:
-                        if clean_text(v):
-                            monitored_site_keys.add(site_key(v))
-                else:
-                    st.warning(
-                        "CONFIG_MDA → SITES_MONITOREADOS: "
-                        "no encontré la columna SITIO."
-                    )
-            else:
-                st.warning(
-                    "CONFIG_MDA no contiene la hoja SITES_MONITOREADOS."
-                )
-
-        except Exception as exc:
-            st.warning(f"No pude leer SITES_MONITOREADOS: {exc}")
+    except Exception as exc:
+        st.warning(
+            "No pude consultar CONFIG_MDA_ONLINE → "
+            f"SITES_MONITOREADOS: {exc}"
+        )
 
     # =========================================================
     # GOOGLE SHEETS - COMENTARIOS MDA
@@ -1230,7 +1236,6 @@ else:
     # =========================
 
     uploaded = shared_wos
-    config_file = shared_config
 
     if uploaded is None:
         st.info("Carga WOs List desde la barra lateral.")
@@ -1296,77 +1301,67 @@ else:
 
     monitored_turno_keys = set()
 
-    if config_file is not None:
-        try:
-            xcfg = pd.ExcelFile(config_file)
+    # CONFIG_MDA_ONLINE se consulta directamente desde Google Sheets.
+    try:
+        # Hoja ACCESOS
+        adf = read_config_sheet("ACCESOS")
 
-            # Hoja ACCESOS
-            if "ACCESOS" in xcfg.sheet_names:
-                adf = pd.read_excel(
-                    config_file,
-                    sheet_name="ACCESOS"
-                ).dropna(axis=1, how="all")
+        sc = auto_match(adf.columns, ["SITIO", "Nombre de Site", "SITE"])
+        ac = auto_match(adf.columns, ["ESTADO ACCESO", "Estado de acceso", "ACCESO"])
+        oc = auto_match(adf.columns, ["OBSERVACIÓN", "OBSERVACION", "Comentario", "NOTA"])
 
-                sc = auto_match(adf.columns, ["SITIO", "Nombre de Site", "SITE"])
-                ac = auto_match(adf.columns, ["ESTADO ACCESO", "Estado de acceso", "ACCESO"])
-                oc = auto_match(adf.columns, ["OBSERVACIÓN", "OBSERVACION", "Comentario", "NOTA"])
-
-                if sc is None or ac is None:
-                    st.warning(
-                        "CONFIG_MDA → ACCESOS necesita las columnas "
-                        "SITIO y ESTADO ACCESO."
+        if sc is None or ac is None:
+            st.warning(
+                "CONFIG_MDA_ONLINE → ACCESOS necesita las columnas "
+                "SITIO y ESTADO ACCESO."
+            )
+        else:
+            amap = {}
+            for _, ar in adf.iterrows():
+                k = normalize(
+                    re.sub(r"^\s*[0-9]+_?", "", clean(ar[sc]))
+                )
+                if k:
+                    amap[k] = (
+                        clean(ar[ac]),
+                        clean(ar[oc]) if oc else ""
                     )
-                else:
-                    amap = {}
-                    for _, ar in adf.iterrows():
-                        k = normalize(
-                            re.sub(r"^\s*[0-9]+_?", "", clean(ar[sc]))
-                        )
-                        if k:
-                            amap[k] = (
-                                clean(ar[ac]),
-                                clean(ar[oc]) if oc else ""
-                            )
 
-                    for i in work.index:
-                        k = normalize(
+            for i in work.index:
+                k = normalize(
+                    re.sub(
+                        r"^\s*[0-9]+_?",
+                        "",
+                        clean(work.at[i, "SITE"])
+                    )
+                )
+                info = amap.get(k)
+                if info:
+                    work.at[i, "ESTADO_ACCESO"], work.at[i, "OBSERVACION_ACCESO"] = info
+
+        # Hoja SITES_MONITOREADOS
+        sdf = read_config_sheet("SITES_MONITOREADOS")
+
+        scc = auto_match(
+            sdf.columns,
+            ["SITIO", "Nombre de Site", "SITE"]
+        )
+
+        if scc:
+            for v in sdf[scc]:
+                if clean(v):
+                    monitored_turno_keys.add(
+                        normalize(
                             re.sub(
                                 r"^\s*[0-9]+_?",
                                 "",
-                                clean(work.at[i, "SITE"])
+                                clean(v)
                             )
                         )
-                        info = amap.get(k)
-                        if info:
-                            work.at[i, "ESTADO_ACCESO"], work.at[i, "OBSERVACION_ACCESO"] = info
+                    )
 
-            # Hoja SITES_MONITOREADOS
-            if "SITES_MONITOREADOS" in xcfg.sheet_names:
-                sdf = pd.read_excel(
-                    config_file,
-                    sheet_name="SITES_MONITOREADOS"
-                ).dropna(axis=1, how="all")
-
-                scc = auto_match(
-                    sdf.columns,
-                    ["SITIO", "Nombre de Site", "SITE"]
-                )
-
-                if scc:
-                    for v in sdf[scc]:
-                        if clean(v):
-                            monitored_turno_keys.add(
-                                normalize(
-                                    re.sub(
-                                        r"^\s*[0-9]+_?",
-                                        "",
-                                        clean(v)
-                                    )
-                                )
-                            )
-
-        except Exception as exc:
-            st.warning(f"No pude leer CONFIG_MDA.xlsx: {exc}")
+    except Exception as exc:
+        st.warning(f"No pude consultar CONFIG_MDA_ONLINE: {exc}")
 
 
     # =========================
