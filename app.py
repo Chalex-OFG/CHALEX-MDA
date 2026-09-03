@@ -1,6 +1,6 @@
 import streamlit as st
 
-st.set_page_config(page_title="CHALEX-MDA V7", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="CHALEX-MDA V7.1", page_icon="⚡", layout="wide")
 
 with st.sidebar:
     st.header("📂 Carga única de datos")
@@ -157,7 +157,7 @@ if modulo == "📊 Corte / Monitoreo":
     # CONFIG_MDA ONLINE - GOOGLE SHEETS
     # =========================================================
 
-    CONFIG_MDA_SHEET_ID = "1Lvsb31aFps3FaJiURH_pqGOHqpxotmEU505L320eF2E"
+    CONFIG_MDA_SHEET_ID = "1Lvsb31aFps3FaJiURH_pqGOHqpsotmEU505L32OeF2E"
 
     @st.cache_data(ttl=60, show_spinner=False)
     def read_config_sheet(sheet_name):
