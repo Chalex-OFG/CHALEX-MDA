@@ -1,6 +1,26 @@
 import streamlit as st
 
-st.set_page_config(page_title="CHALEX-MDA V7.1", page_icon="⚡", layout="wide")
+# =========================================================
+# CONFIG_MDA ONLINE - GOOGLE SHEETS (GLOBAL)
+# =========================================================
+CONFIG_MDA_SHEET_ID = "1Lvsb31aFps3FaJiURH_pqGOHqpsotmEU505L32OeF2E"
+
+@st.cache_data(ttl=60, show_spinner=False)
+def read_config_sheet(sheet_name):
+    """
+    Lee una pestaña pública de CONFIG_MDA_ONLINE.
+    Disponible para todos los módulos de la aplicación.
+    """
+    from urllib.parse import quote
+
+    url = (
+        f"https://docs.google.com/spreadsheets/d/{CONFIG_MDA_SHEET_ID}/"
+        f"gviz/tq?tqx=out:csv&sheet={quote(sheet_name)}"
+    )
+    return pd.read_csv(url).dropna(axis=1, how="all")
+
+
+st.set_page_config(page_title="CHALEX-MDA V7.2", page_icon="⚡", layout="wide")
 
 with st.sidebar:
     st.header("📂 Carga única de datos")
@@ -156,21 +176,6 @@ if modulo == "📊 Corte / Monitoreo":
     # =========================================================
     # CONFIG_MDA ONLINE - GOOGLE SHEETS
     # =========================================================
-
-    CONFIG_MDA_SHEET_ID = "1Lvsb31aFps3FaJiURH_pqGOHqpsotmEU505L32OeF2E"
-
-    @st.cache_data(ttl=60, show_spinner=False)
-    def read_config_sheet(sheet_name):
-        """
-        Lee una pestaña pública de CONFIG_MDA_ONLINE.
-        Se actualiza como máximo cada 60 segundos.
-        """
-        from urllib.parse import quote
-        url = (
-            f"https://docs.google.com/spreadsheets/d/{CONFIG_MDA_SHEET_ID}/"
-            f"gviz/tq?tqx=out:csv&sheet={quote(sheet_name)}"
-        )
-        return pd.read_csv(url).dropna(axis=1, how="all")
 
     monitored_site_keys = set()
 
