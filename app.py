@@ -22,6 +22,10 @@ def read_config_sheet(sheet_name):
 
 
 st.set_page_config(page_title="CHALEX-MDA", page_icon="🐺", layout="wide")
+try:
+    st.image("chalex_network.png", width=220)
+except Exception:
+    pass
 
 with st.sidebar:
     st.header("📂 Carga única de datos")
