@@ -3,7 +3,7 @@ import streamlit as st
 # =========================================================
 # CONFIG_MDA ONLINE - GOOGLE SHEETS (GLOBAL)
 # =========================================================
-CONFIG_MDA_SHEET_ID = "1Lvsb31aFps3FaJiURH_pqGOHqpsotmEU505L32OeF2E"
+CONFIG_MDA_SHEET_ID = "1Lvsb31aFps3FaJiURH_pqGQHqpsotmEU505L32OeF2E"
 
 @st.cache_data(ttl=60, show_spinner=False)
 def read_config_sheet(sheet_name):
@@ -20,7 +20,7 @@ def read_config_sheet(sheet_name):
     return pd.read_csv(url).dropna(axis=1, how="all")
 
 
-st.set_page_config(page_title="CHALEX-MDA V7.2", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="CHALEX-MDA V7.3", page_icon="⚡", layout="wide")
 
 with st.sidebar:
     st.header("📂 Carga única de datos")
