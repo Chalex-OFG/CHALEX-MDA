@@ -1,6 +1,6 @@
 import streamlit as st
 
-st.set_page_config(page_title="CHALEX-MDA V5", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="CHALEX-MDA V6", page_icon="⚡", layout="wide")
 
 with st.sidebar:
     st.header("📂 Carga única de datos")
@@ -197,11 +197,19 @@ if modulo == "📊 Corte / Monitoreo":
     # =========================================================
 
     def sheets_configured():
-        return (
-            "gcp_service_account" in st.secrets
-            and "comments_sheet" in st.secrets
-            and "spreadsheet_url" in st.secrets["comments_sheet"]
-        )
+        """
+        Si Render/Streamlit no tiene secrets configurados,
+        simplemente desactiva Google Sheets sin romper la app.
+        """
+        try:
+            secrets = st.secrets
+            return (
+                "gcp_service_account" in secrets
+                and "comments_sheet" in secrets
+                and "spreadsheet_url" in secrets["comments_sheet"]
+            )
+        except Exception:
+            return False
 
     @st.cache_resource(show_spinner=False)
     def get_comments_worksheet():
