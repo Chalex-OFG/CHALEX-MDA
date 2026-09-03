@@ -23,7 +23,7 @@ def read_config_sheet(sheet_name):
 
 st.set_page_config(page_title="CHALEX-MDA", page_icon="🐺", layout="wide")
 try:
-    st.image("chalex_network.png", width=400)
+    st.image("chalex_network.png", width=1000)
 except Exception:
     pass
 
