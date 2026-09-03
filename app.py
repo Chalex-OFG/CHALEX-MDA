@@ -1,4 +1,5 @@
 import streamlit as st
+import pandas as pd
 
 # =========================================================
 # CONFIG_MDA ONLINE - GOOGLE SHEETS (GLOBAL)
@@ -20,7 +21,7 @@ def read_config_sheet(sheet_name):
     return pd.read_csv(url).dropna(axis=1, how="all")
 
 
-st.set_page_config(page_title="CHALEX-MDA V7.3", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="CHALEX-MDA", page_icon="🐺", layout="wide")
 
 with st.sidebar:
     st.header("📂 Carga única de datos")
@@ -29,6 +30,9 @@ with st.sidebar:
     shared_wos = st.file_uploader("3. WOs List", type=["xlsx", "xls"], key="shared_wos")
     st.divider()
     modulo = st.radio("Módulo", ["📊 Corte / Monitoreo", "🔄 Cambio de Turno"])
+    if st.button("🔄 Actualizar CONFIG_MDA", use_container_width=True):
+        read_config_sheet.clear()
+        st.rerun()
 
 if modulo == "📊 Corte / Monitoreo":
     st.header("📊 Corte / Monitoreo")
@@ -559,6 +563,57 @@ if modulo == "📊 Corte / Monitoreo":
             st.session_state.comments_mda.setdefault(site, comment)
 
     # =========================================================
+    # OVERRIDES MANUALES DESDE CONFIG_MDA_ONLINE
+    # Hoja: ESTADO_MANUAL_SITE
+    # Clave: SITE (ignorando el prefijo numérico inicial)
+    # =========================================================
+
+    manual_site_map = {}
+
+    try:
+        mdf = read_config_sheet("ESTADO_MANUAL_SITE")
+
+        # Normalizamos encabezados para tolerar tildes en ACTUALIZACIÓN.
+        manual_cols = {
+            normalize(str(c)): c
+            for c in mdf.columns
+        }
+
+        m_site = manual_cols.get(normalize("SITE")) or manual_cols.get(normalize("SITIO"))
+
+        if m_site:
+            for _, mr in mdf.iterrows():
+                raw_site = clean_text(mr.get(m_site, ""))
+                if not raw_site:
+                    continue
+
+                mk = site_key(raw_site)
+
+                def mvalue(label):
+                    col = manual_cols.get(normalize(label))
+                    return clean_text(mr.get(col, "")) if col else ""
+
+                manual_site_map[mk] = {
+                    "ESTADO": mvalue("ESTADO MANUAL"),
+                    "AUTONOMIA": mvalue("AUTONOMIA MANUAL"),
+                    "SOC": mvalue("SOC MANUAL"),
+                    "VOLTAJE": mvalue("VOLTAJE MANUAL"),
+                    "CORRIENTE": mvalue("CORRIENTE MANUAL"),
+                    "COMENTARIO MDA": mvalue("COMENTARIO MDA"),
+                }
+        else:
+            st.warning(
+                "CONFIG_MDA_ONLINE → ESTADO_MANUAL_SITE: "
+                "no encontré la columna SITE."
+            )
+
+    except Exception as exc:
+        st.warning(
+            "No pude consultar CONFIG_MDA_ONLINE → "
+            f"ESTADO_MANUAL_SITE: {exc}"
+        )
+
+    # =========================================================
     # TABLA PRINCIPAL
     # =========================================================
 
@@ -580,6 +635,23 @@ if modulo == "📊 Corte / Monitoreo":
         site = clean_text(r["SITIO"]) or "-"
         technician = technician_by_cm.get(cm_key, "-")
 
+        # Si existe dato manual para el SITE, manda el manual.
+        # Si la celda manual está vacía, se conserva el valor del Energy Dashboard.
+        manual = manual_site_map.get(key, {})
+
+        estado_final = clean_text(manual.get("ESTADO")) or clean_text(r["ESTADO"]) or "-"
+        autonomia_final = clean_text(manual.get("AUTONOMIA")) or r["AUTONOMIA"]
+        soc_final = clean_text(manual.get("SOC")) or r["SOC"]
+        voltaje_final = clean_text(manual.get("VOLTAJE")) or r["VOLTAJE"]
+        corriente_final = clean_text(manual.get("CORRIENTE")) or r["CORRIENTE"]
+
+        comentario_manual = clean_text(manual.get("COMENTARIO MDA"))
+        comentario_mda_final = (
+            comentario_manual
+            if comentario_manual
+            else st.session_state.comments_mda.get(site, "")
+        )
+
         dashboard_date = pd.to_datetime(
             r["FECHA OCURRENCIA"],
             errors="coerce",
@@ -596,17 +668,17 @@ if modulo == "📊 Corte / Monitoreo":
             "WO": clean_text(r["WO"]) or "-",
             "SITIO": site,
             "PRIORIDAD": clean_text(r["PRIORIDAD"]) or "-",
-            "ESTADO": clean_text(r["ESTADO"]) or "-",
-            "AUTONOMIA": fmt_number(r["AUTONOMIA"], " h"),
-            "SOC": fmt_number(r["SOC"], "%"),
-            "VOLTAJE": fmt_number(r["VOLTAJE"], " V"),
-            "CORRIENTE": fmt_number(r["CORRIENTE"], " A"),
+            "ESTADO": estado_final,
+            "AUTONOMIA": fmt_number(autonomia_final, " h"),
+            "SOC": fmt_number(soc_final, "%"),
+            "VOLTAJE": fmt_number(voltaje_final, " V"),
+            "CORRIENTE": fmt_number(corriente_final, " A"),
             "ALARMA": alarm_text,
             "STATUS DE LA ALARMA": status_text,
             "TECNICO ASIGNADO": technician,
             "DEPARTAMENTO": clean_text(r["DEPARTAMENTO"]) or "-",
             "COMENTARIO DASHBOARD": clean_text(r["COMENTARIO DASHBOARD"]) or "-",
-            "COMENTARIO MDA": st.session_state.comments_mda.get(site, ""),
+            "COMENTARIO MDA": comentario_mda_final,
             "FECHA OCURRENCIA": date_text,
             "_ORDEN_FECHA": dashboard_date,
             "_REGION_CODE": r["_REGION_CODE"],
@@ -1071,6 +1143,10 @@ else:
         }
         return mapping.get(code, code or "SIN DEPARTAMENTO")
 
+    # Comentarios persistentes para SITIOS EN MONITOREO.
+    # Clave: CM + SITE normalizado.
+    seguimiento_cm_map = {}
+
     def make_line(row, section):
         cm = clean(row.get("CM")) or "-"
         site = clean(row.get("SITE")) or "-"
@@ -1101,6 +1177,18 @@ else:
                 line += f"\n↳ Acceso: {acceso}"
                 if obs:
                     line += f" - {obs}"
+
+            cm_key_comment = normalize(cm)
+            site_key_comment = normalize(
+                re.sub(r"^\s*[0-9]+_?", "", site)
+            )
+            comentario = seguimiento_cm_map.get(
+                (cm_key_comment, site_key_comment),
+                ""
+            )
+
+            if comentario:
+                line += f"\n↳ Comentario: {comentario}"
 
         return line
 
@@ -1364,6 +1452,28 @@ else:
                             )
                         )
                     )
+
+        # Hoja SEGUIMIENTO_CM
+        segdf = read_config_sheet("SEGUIMIENTO_CM")
+
+        cmc = auto_match(segdf.columns, ["CM", "Número de WO", "Numero de WO"])
+        sgc = auto_match(segdf.columns, ["SITE", "SITIO", "Nombre de Site"])
+        cgc = auto_match(segdf.columns, ["COMENTARIO MDA", "COMENTARIO", "Comentario MDA"])
+
+        if cmc and sgc and cgc:
+            for _, sr in segdf.iterrows():
+                scm = clean(sr[cmc])
+                ssite = clean(sr[sgc])
+                scomment = clean(sr[cgc])
+
+                if not scm or not ssite or not scomment:
+                    continue
+
+                kcm = normalize(scm)
+                ksite = normalize(
+                    re.sub(r"^\s*[0-9]+_?", "", ssite)
+                )
+                seguimiento_cm_map[(kcm, ksite)] = scomment
 
     except Exception as exc:
         st.warning(f"No pude consultar CONFIG_MDA_ONLINE: {exc}")
