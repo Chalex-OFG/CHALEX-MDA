@@ -21,7 +21,7 @@ def read_config_sheet(sheet_name):
     return pd.read_csv(url).dropna(axis=1, how="all")
 
 
-st.set_page_config(page_title="CHALEX-MDA V8", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="CHALEX-MDA V8.2", page_icon="⚡", layout="wide")
 
 with st.sidebar:
     st.header("📂 Carga única de datos")
@@ -134,27 +134,71 @@ if modulo == "📊 Corte / Monitoreo":
 
     def read_wos(file_obj):
         """
-        Intenta detectar una fila de encabezados que contenga CM/WO State/Site.
-        Si no, usa la primera fila.
+        Detecta la fila real de encabezados del WOs List.
+        Reinicia el puntero antes de cada lectura para evitar
+        lecturas incompletas del archivo subido por Streamlit.
         """
-        raw = pd.read_excel(file_obj, header=None, nrows=25)
+        file_obj.seek(0)
+
+        raw = pd.read_excel(
+            file_obj,
+            header=None,
+            nrows=25
+        )
+
         header_row = 0
 
         for idx in range(len(raw)):
-            vals = {normalize(v) for v in raw.iloc[idx].tolist() if clean_text(v)}
-            has_state = any(x in vals for x in {"wo state", "estado de la tarea", "task state"})
-            has_site = any(x in vals for x in {"nombre de site", "site name", "site"})
+            vals = {
+                normalize(v)
+                for v in raw.iloc[idx].tolist()
+                if clean_text(v)
+            }
+
+            has_state = any(
+                x in vals
+                for x in {
+                    "wo state",
+                    "estado de la tarea",
+                    "estado de la tarea wo state",
+                    "task state"
+                }
+            )
+
+            has_site = any(
+                x in vals
+                for x in {
+                    "nombre de site",
+                    "site name",
+                    "site"
+                }
+            )
+
             has_cm = any(
                 x in vals
                 for x in {
-                    "cm", "wo no", "wo number", "wo", "work order"
+                    "numero de wo",
+                    "cm",
+                    "wo no",
+                    "wo number",
+                    "wo",
+                    "work order"
                 }
             )
+
             if has_state and has_site and has_cm:
                 header_row = idx
                 break
 
-        return pd.read_excel(file_obj, header=header_row).dropna(axis=1, how="all"), header_row
+        # Volvemos al inicio antes de leer el archivo completo.
+        file_obj.seek(0)
+
+        df = pd.read_excel(
+            file_obj,
+            header=header_row
+        ).dropna(axis=1, how="all")
+
+        return df, header_row
 
     def find_col(columns, aliases):
         norm_cols = {normalize(c): c for c in columns}
@@ -524,23 +568,25 @@ if modulo == "📊 Corte / Monitoreo":
         cm_col = "Número de WO"
         tech_col = "Nombre de personal FLM asignado"
 
-        missing_wos_cols = [
-            c for c in [cm_col, tech_col]
-            if c not in wos_df.columns
-        ]
-
-        if missing_wos_cols:
+        # CM sí es obligatorio para cruzar con el Dashboard.
+        # La columna de técnico es opcional: si no existe, queda vacía.
+        if cm_col not in wos_df.columns:
             st.error(
-                "Faltan columnas esperadas en WOs List: "
-                + ", ".join(missing_wos_cols)
+                "Falta la columna esperada en WOs List: "
+                + cm_col
             )
             st.write("Columnas encontradas:", list(wos_df.columns))
             st.stop()
 
         # NO cruzamos por SITE del WOs.
         # Solo por el CM que ya manda el Dashboard.
-        wos_tmp = wos_df[[cm_col, tech_col]].copy()
-        wos_tmp.columns = ["CM", "TECNICO"]
+        if tech_col in wos_df.columns:
+            wos_tmp = wos_df[[cm_col, tech_col]].copy()
+            wos_tmp.columns = ["CM", "TECNICO"]
+        else:
+            wos_tmp = wos_df[[cm_col]].copy()
+            wos_tmp["TECNICO"] = ""
+            wos_tmp.columns = ["CM", "TECNICO"]
 
         for _, r in wos_tmp.iterrows():
             cm = normalize_cm(r["CM"])
@@ -1348,7 +1394,12 @@ else:
 
     missing = [
         field for field, col in mapping.items()
-        if col is None and field not in ["DEPARTAMENTO", "CRITICIDAD", "HORA_TICKET"]
+        if col is None and field not in [
+            "DEPARTAMENTO",
+            "CRITICIDAD",
+            "HORA_TICKET",
+            "TECNICO"
+        ]
     ]
 
     if missing:
@@ -1360,7 +1411,7 @@ else:
                 if selected != "— No encontrada —":
                     mapping[field] = selected
 
-    required = ["ESTADO", "CM", "SITE", "TECNICO", "TIPO_TAREA"]
+    required = ["ESTADO", "CM", "SITE", "TIPO_TAREA"]
     if any(mapping.get(x) is None for x in required):
         st.stop()
 
@@ -1368,7 +1419,11 @@ else:
         "ESTADO": df[mapping["ESTADO"]],
         "CM": df[mapping["CM"]],
         "SITE": df[mapping["SITE"]],
-        "TECNICO": df[mapping["TECNICO"]],
+        "TECNICO": (
+            df[mapping["TECNICO"]]
+            if mapping.get("TECNICO")
+            else ""
+        ),
         "TIPO_TAREA": df[mapping["TIPO_TAREA"]],
         "PRIORIDAD_SITE": df[mapping["PRIORIDAD_SITE"]],
     })
