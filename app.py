@@ -21,7 +21,11 @@ def read_config_sheet(sheet_name):
     return pd.read_csv(url).dropna(axis=1, how="all")
 
 
-st.set_page_config(page_title="CHALEX-MDA V8.2", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="CHALEX-MDA", page_icon="🐺", layout="wide")
+try:
+    st.image("chalex_network.png", width=1000)
+except Exception:
+    pass
 
 with st.sidebar:
     st.header("📂 Carga única de datos")
