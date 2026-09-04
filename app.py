@@ -21,11 +21,7 @@ def read_config_sheet(sheet_name):
     return pd.read_csv(url).dropna(axis=1, how="all")
 
 
-st.set_page_config(page_title="CHALEX-MDA", page_icon="🐺", layout="wide")
-try:
-    st.image("chalex_network.png", width=1000)
-except Exception:
-    pass
+st.set_page_config(page_title="CHALEX-MDA V8", page_icon="⚡", layout="wide")
 
 with st.sidebar:
     st.header("📂 Carga única de datos")
@@ -138,71 +134,27 @@ if modulo == "📊 Corte / Monitoreo":
 
     def read_wos(file_obj):
         """
-        Detecta la fila real de encabezados del WOs List.
-        Reinicia el puntero antes de cada lectura para evitar
-        lecturas incompletas del archivo subido por Streamlit.
+        Intenta detectar una fila de encabezados que contenga CM/WO State/Site.
+        Si no, usa la primera fila.
         """
-        file_obj.seek(0)
-
-        raw = pd.read_excel(
-            file_obj,
-            header=None,
-            nrows=25
-        )
-
+        raw = pd.read_excel(file_obj, header=None, nrows=25)
         header_row = 0
 
         for idx in range(len(raw)):
-            vals = {
-                normalize(v)
-                for v in raw.iloc[idx].tolist()
-                if clean_text(v)
-            }
-
-            has_state = any(
-                x in vals
-                for x in {
-                    "wo state",
-                    "estado de la tarea",
-                    "estado de la tarea wo state",
-                    "task state"
-                }
-            )
-
-            has_site = any(
-                x in vals
-                for x in {
-                    "nombre de site",
-                    "site name",
-                    "site"
-                }
-            )
-
+            vals = {normalize(v) for v in raw.iloc[idx].tolist() if clean_text(v)}
+            has_state = any(x in vals for x in {"wo state", "estado de la tarea", "task state"})
+            has_site = any(x in vals for x in {"nombre de site", "site name", "site"})
             has_cm = any(
                 x in vals
                 for x in {
-                    "numero de wo",
-                    "cm",
-                    "wo no",
-                    "wo number",
-                    "wo",
-                    "work order"
+                    "cm", "wo no", "wo number", "wo", "work order"
                 }
             )
-
             if has_state and has_site and has_cm:
                 header_row = idx
                 break
 
-        # Volvemos al inicio antes de leer el archivo completo.
-        file_obj.seek(0)
-
-        df = pd.read_excel(
-            file_obj,
-            header=header_row
-        ).dropna(axis=1, how="all")
-
-        return df, header_row
+        return pd.read_excel(file_obj, header=header_row).dropna(axis=1, how="all"), header_row
 
     def find_col(columns, aliases):
         norm_cols = {normalize(c): c for c in columns}
