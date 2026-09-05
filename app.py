@@ -21,11 +21,7 @@ def read_config_sheet(sheet_name):
     return pd.read_csv(url).dropna(axis=1, how="all")
 
 
-st.set_page_config(page_title="CHALEX-MDA", page_icon="🐺", layout="wide")
-try:
-    st.image("chalex_network.png", width=1000)
-except Exception:
-    pass
+st.set_page_config(page_title="CHALEX-MDA V8.3", page_icon="⚡", layout="wide")
 
 with st.sidebar:
     st.header("📂 Carga única de datos")
@@ -1204,9 +1200,13 @@ else:
         tipo = clean(row.get("TIPO_TAREA")) or "-"
 
         if section == "monitor":
-            line = f"{cm} / {site} / {tipo}"
+            line = f"{cm} / {site}"
+            if tipo and tipo != "-":
+                line += f" / {tipo}"
         else:
-            line = f"{cm} / {site} / {tecnico}"
+            line = f"{cm} / {site}"
+            if tecnico and tecnico != "-":
+                line += f" / {tecnico}"
 
         acceso = clean(row.get("ESTADO_ACCESO"))
         obs = clean(row.get("OBSERVACION_ACCESO"))
@@ -1450,14 +1450,19 @@ else:
     work["DEPARTAMENTO"] = work["DEPARTAMENTO"].replace("", "SIN DEPARTAMENTO")
     work["ESTADO_ACCESO"] = ""
     work["OBSERVACION_ACCESO"] = ""
+    work["_MANUAL_CM"] = False
 
     monitored_turno_keys = set()
 
     # CONFIG_MDA_ONLINE se consulta directamente desde Google Sheets.
     try:
         # Hoja ACCESOS
+        # Columnas:
+        # CM | STATUS CM | SITIO | ESTADO ACCESO | OBSERVACION
         adf = read_config_sheet("ACCESOS")
 
+        cmc_acc = auto_match(adf.columns, ["CM", "Número de WO", "Numero de WO"])
+        stc_acc = auto_match(adf.columns, ["STATUS CM", "ESTADO CM", "STATUS", "ESTADO"])
         sc = auto_match(adf.columns, ["SITIO", "Nombre de Site", "SITE"])
         ac = auto_match(adf.columns, ["ESTADO ACCESO", "Estado de acceso", "ACCESO"])
         oc = auto_match(adf.columns, ["OBSERVACIÓN", "OBSERVACION", "Comentario", "NOTA"])
@@ -1468,28 +1473,97 @@ else:
                 "SITIO y ESTADO ACCESO."
             )
         else:
-            amap = {}
-            for _, ar in adf.iterrows():
-                k = normalize(
-                    re.sub(r"^\s*[0-9]+_?", "", clean(ar[sc]))
-                )
-                if k:
-                    amap[k] = (
-                        clean(ar[ac]),
-                        clean(ar[oc]) if oc else ""
-                    )
+            access_by_site = {}
+            access_by_cm_site = {}
 
-            for i in work.index:
-                k = normalize(
-                    re.sub(
-                        r"^\s*[0-9]+_?",
-                        "",
-                        clean(work.at[i, "SITE"])
-                    )
+            for _, ar in adf.iterrows():
+                site_acc = clean(ar[sc])
+                if not site_acc:
+                    continue
+
+                ksite = normalize(
+                    re.sub(r"^\s*[0-9]+_?", "", site_acc)
                 )
-                info = amap.get(k)
-                if info:
-                    work.at[i, "ESTADO_ACCESO"], work.at[i, "OBSERVACION_ACCESO"] = info
+
+                cm_acc = clean(ar[cmc_acc]) if cmc_acc else ""
+                status_acc = clean(ar[stc_acc]) if stc_acc else ""
+                acceso_acc = clean(ar[ac]) if ac else ""
+                obs_acc = clean(ar[oc]) if oc else ""
+
+                if cm_acc:
+                    access_by_cm_site[(normalize(cm_acc), ksite)] = {
+                        "CM": cm_acc,
+                        "STATUS": status_acc,
+                        "SITE": site_acc,
+                        "ACCESO": acceso_acc,
+                        "OBS": obs_acc,
+                    }
+                else:
+                    access_by_site[ksite] = (acceso_acc, obs_acc)
+
+            # Actualiza tickets que sí existen en el WOs List
+            for i in work.index:
+                ksite = normalize(
+                    re.sub(r"^\s*[0-9]+_?", "", clean(work.at[i, "SITE"]))
+                )
+                kcm = normalize(clean(work.at[i, "CM"]))
+
+                manual_info = access_by_cm_site.get((kcm, ksite))
+
+                if manual_info:
+                    # STATUS CM manual tiene prioridad si está informado.
+                    if clean(manual_info["STATUS"]):
+                        work.at[i, "ESTADO"] = clean(manual_info["STATUS"])
+
+                    work.at[i, "ESTADO_ACCESO"] = clean(manual_info["ACCESO"])
+                    work.at[i, "OBSERVACION_ACCESO"] = clean(manual_info["OBS"])
+                    work.at[i, "_MANUAL_CM"] = True
+                else:
+                    info = access_by_site.get(ksite)
+                    if info:
+                        work.at[i, "ESTADO_ACCESO"], work.at[i, "OBSERVACION_ACCESO"] = info
+
+            # Agrega tickets heredados que ya no aparecen en el WOs List actual.
+            existing_pairs = {
+                (
+                    normalize(clean(r["CM"])),
+                    normalize(re.sub(r"^\s*[0-9]+_?", "", clean(r["SITE"])))
+                )
+                for _, r in work.iterrows()
+            }
+
+            inherited_rows = []
+
+            for (kcm, ksite), info in access_by_cm_site.items():
+                if (kcm, ksite) in existing_pairs:
+                    continue
+
+                status_acc = clean(info["STATUS"])
+
+                # Si STATUS CM está vacío no se agrega a ninguna sección.
+                if not status_acc:
+                    continue
+
+                inherited_rows.append({
+                    "ESTADO": status_acc,
+                    "CM": clean(info["CM"]),
+                    "SITE": clean(info["SITE"]),
+                    "TECNICO": "",
+                    "TIPO_TAREA": "",
+                    "PRIORIDAD_SITE": "",
+                    "HORA_TICKET": pd.NaT,
+                    "DEPARTAMENTO": derive_department_from_site(clean(info["SITE"])) or "SIN DEPARTAMENTO",
+                    "CRITICIDAD": "",
+                    "ESTADO_ACCESO": clean(info["ACCESO"]),
+                    "OBSERVACION_ACCESO": clean(info["OBS"]),
+                    "_MANUAL_CM": True,
+                })
+
+            if inherited_rows:
+                work = pd.concat(
+                    [work, pd.DataFrame(inherited_rows)],
+                    ignore_index=True
+                )
 
         # Hoja SITES_MONITOREADOS
         sdf = read_config_sheet("SITES_MONITOREADOS")
