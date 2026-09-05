@@ -21,7 +21,7 @@ def read_config_sheet(sheet_name):
     return pd.read_csv(url).dropna(axis=1, how="all")
 
 
-st.set_page_config(page_title="CHALEX-MDA V8.3", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="CHALEX-MDA V8.4", page_icon="⚡", layout="wide")
 
 with st.sidebar:
     st.header("📂 Carga única de datos")
@@ -1259,7 +1259,7 @@ else:
 
         state_norm = df["ESTADO"].astype(str).map(normalize)
 
-        closed_mask = state_norm.eq("closed")
+        closed_mask = state_norm.isin(["closed", "canceled"])
         course_mask = state_norm.isin(["dispatched", "accepted", "inprocess"])
         # SITIOS EN MONITOREO siempre parte de los Unscheduled.
         unscheduled_mask = state_norm.isin([
