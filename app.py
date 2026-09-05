@@ -21,13 +21,14 @@ def read_config_sheet(sheet_name):
     return pd.read_csv(url).dropna(axis=1, how="all")
 
 
-st.set_page_config(page_title="CHALEX-MDA V8.4", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="CHALEX-MDA V9.1", page_icon="⚡", layout="wide")
 
 with st.sidebar:
     st.header("📂 Carga única de datos")
     shared_energy = st.file_uploader("1. Site Energy Dashboard", type=["xlsx", "xls"], key="shared_energy")
     shared_alarms = st.file_uploader("2. Current Alarms", type=["xlsx", "xls"], key="shared_alarms")
     shared_wos = st.file_uploader("3. WOs List", type=["xlsx", "xls"], key="shared_wos")
+    shared_wos_pext = st.file_uploader("4. WOs List PEXT", type=["xlsx", "xls"], key="shared_wos_pext")
     st.divider()
     modulo = st.radio("Módulo", ["📊 Corte / Monitoreo", "🔄 Cambio de Turno"])
     if st.button("🔄 Actualizar CONFIG_MDA", use_container_width=True):
@@ -1523,47 +1524,8 @@ else:
                     if info:
                         work.at[i, "ESTADO_ACCESO"], work.at[i, "OBSERVACION_ACCESO"] = info
 
-            # Agrega tickets heredados que ya no aparecen en el WOs List actual.
-            existing_pairs = {
-                (
-                    normalize(clean(r["CM"])),
-                    normalize(re.sub(r"^\s*[0-9]+_?", "", clean(r["SITE"])))
-                )
-                for _, r in work.iterrows()
-            }
-
-            inherited_rows = []
-
-            for (kcm, ksite), info in access_by_cm_site.items():
-                if (kcm, ksite) in existing_pairs:
-                    continue
-
-                status_acc = clean(info["STATUS"])
-
-                # Si STATUS CM está vacío no se agrega a ninguna sección.
-                if not status_acc:
-                    continue
-
-                inherited_rows.append({
-                    "ESTADO": status_acc,
-                    "CM": clean(info["CM"]),
-                    "SITE": clean(info["SITE"]),
-                    "TECNICO": "",
-                    "TIPO_TAREA": "",
-                    "PRIORIDAD_SITE": "",
-                    "HORA_TICKET": pd.NaT,
-                    "DEPARTAMENTO": derive_department_from_site(clean(info["SITE"])) or "SIN DEPARTAMENTO",
-                    "CRITICIDAD": "",
-                    "ESTADO_ACCESO": clean(info["ACCESO"]),
-                    "OBSERVACION_ACCESO": clean(info["OBS"]),
-                    "_MANUAL_CM": True,
-                })
-
-            if inherited_rows:
-                work = pd.concat(
-                    [work, pd.DataFrame(inherited_rows)],
-                    ignore_index=True
-                )
+            # ACCESOS solo enriquece tickets que ya existen en este WOs List.
+            # No crea tickets nuevos ni decide si pertenecen a NORMAL o PEXT.
 
         # Hoja SITES_MONITOREADOS
         sdf = read_config_sheet("SITES_MONITOREADOS")
@@ -1610,6 +1572,162 @@ else:
 
     except Exception as exc:
         st.warning(f"No pude consultar CONFIG_MDA_ONLINE: {exc}")
+
+
+
+    def build_work_from_wos(uploaded_file):
+        """
+        Construye un DataFrame estándar desde un WOs List.
+        Se usa tanto para el WOs List principal como para PEXT.
+        """
+        if uploaded_file is None:
+            return None
+
+        uploaded_file.seek(0)
+        xls_local = pd.ExcelFile(uploaded_file)
+        first_sheet = xls_local.sheet_names[0]
+
+        uploaded_file.seek(0)
+        df_local = pd.read_excel(
+            uploaded_file,
+            sheet_name=first_sheet
+        ).dropna(axis=1, how="all")
+
+        mapping_local = {
+            field: auto_match(df_local.columns, aliases)
+            for field, aliases in ALIASES.items()
+        }
+
+        required_local = ["ESTADO", "CM", "SITE", "TIPO_TAREA"]
+
+        if any(mapping_local.get(x) is None for x in required_local):
+            missing_local = [
+                x for x in required_local
+                if mapping_local.get(x) is None
+            ]
+            st.warning(
+                "WOs List PEXT: no pude detectar automáticamente: "
+                + ", ".join(missing_local)
+            )
+            return None
+
+        work_local = pd.DataFrame({
+            "ESTADO": df_local[mapping_local["ESTADO"]],
+            "CM": df_local[mapping_local["CM"]],
+            "SITE": df_local[mapping_local["SITE"]],
+            "TECNICO": (
+                df_local[mapping_local["TECNICO"]]
+                if mapping_local.get("TECNICO")
+                else ""
+            ),
+            "TIPO_TAREA": df_local[mapping_local["TIPO_TAREA"]],
+            "PRIORIDAD_SITE": (
+                df_local[mapping_local["PRIORIDAD_SITE"]]
+                if mapping_local.get("PRIORIDAD_SITE")
+                else ""
+            ),
+        })
+
+        if mapping_local.get("HORA_TICKET"):
+            work_local["HORA_TICKET"] = df_local[mapping_local["HORA_TICKET"]]
+        else:
+            work_local["HORA_TICKET"] = pd.NaT
+
+        if mapping_local.get("DEPARTAMENTO"):
+            work_local["DEPARTAMENTO"] = df_local[mapping_local["DEPARTAMENTO"]].apply(clean)
+        else:
+            work_local["DEPARTAMENTO"] = work_local["SITE"].apply(derive_department_from_site)
+
+        if mapping_local.get("CRITICIDAD"):
+            work_local["CRITICIDAD"] = df_local[mapping_local["CRITICIDAD"]].apply(clean)
+        else:
+            work_local["CRITICIDAD"] = ""
+
+        work_local["DEPARTAMENTO"] = work_local["DEPARTAMENTO"].replace("", "SIN DEPARTAMENTO")
+        work_local["ESTADO_ACCESO"] = ""
+        work_local["OBSERVACION_ACCESO"] = ""
+        work_local["_MANUAL_CM"] = False
+
+        return work_local
+
+    def apply_online_access_and_manual_status(work_local):
+        """
+        Aplica la misma hoja ACCESOS a cualquier WOs List:
+        - acceso por SITE
+        - override STATUS CM por CM + SITE
+        - no crea tickets nuevos
+        - el WOs List de origen define si el ticket es NORMAL o PEXT
+        """
+        if work_local is None:
+            return None
+
+        try:
+            adf_local = read_config_sheet("ACCESOS")
+
+            cmc_acc = auto_match(adf_local.columns, ["CM", "Número de WO", "Numero de WO"])
+            stc_acc = auto_match(adf_local.columns, ["STATUS CM", "ESTADO CM", "STATUS", "ESTADO"])
+            sc_acc = auto_match(adf_local.columns, ["SITIO", "Nombre de Site", "SITE"])
+            ac_acc = auto_match(adf_local.columns, ["ESTADO ACCESO", "Estado de acceso", "ACCESO"])
+            oc_acc = auto_match(adf_local.columns, ["OBSERVACIÓN", "OBSERVACION", "Comentario", "NOTA"])
+
+            if sc_acc is None or ac_acc is None:
+                return work_local
+
+            access_by_site = {}
+            access_by_cm_site = {}
+
+            for _, ar in adf_local.iterrows():
+                site_acc = clean(ar[sc_acc])
+                if not site_acc:
+                    continue
+
+                ksite = normalize(
+                    re.sub(r"^\s*[0-9]+_?", "", site_acc)
+                )
+
+                cm_acc = clean(ar[cmc_acc]) if cmc_acc else ""
+                status_acc = clean(ar[stc_acc]) if stc_acc else ""
+                acceso_acc = clean(ar[ac_acc]) if ac_acc else ""
+                obs_acc = clean(ar[oc_acc]) if oc_acc else ""
+
+                if cm_acc:
+                    access_by_cm_site[(normalize(cm_acc), ksite)] = {
+                        "CM": cm_acc,
+                        "STATUS": status_acc,
+                        "SITE": site_acc,
+                        "ACCESO": acceso_acc,
+                        "OBS": obs_acc,
+                    }
+                else:
+                    access_by_site[ksite] = (acceso_acc, obs_acc)
+
+            for i in work_local.index:
+                ksite = normalize(
+                    re.sub(r"^\s*[0-9]+_?", "", clean(work_local.at[i, "SITE"]))
+                )
+                kcm = normalize(clean(work_local.at[i, "CM"]))
+
+                manual_info = access_by_cm_site.get((kcm, ksite))
+
+                if manual_info:
+                    if clean(manual_info["STATUS"]):
+                        work_local.at[i, "ESTADO"] = clean(manual_info["STATUS"])
+
+                    work_local.at[i, "ESTADO_ACCESO"] = clean(manual_info["ACCESO"])
+                    work_local.at[i, "OBSERVACION_ACCESO"] = clean(manual_info["OBS"])
+                    work_local.at[i, "_MANUAL_CM"] = True
+                else:
+                    info = access_by_site.get(ksite)
+                    if info:
+                        work_local.at[i, "ESTADO_ACCESO"], work_local.at[i, "OBSERVACION_ACCESO"] = info
+
+            # ACCESOS solo complementa los tickets que ya vienen en este WOs List.
+            # No agrega CM heredados ni mezcla tickets entre NORMAL y PEXT.
+            return work_local
+
+        except Exception as exc:
+            st.warning(f"WOs List PEXT: no pude aplicar CONFIG_MDA_ONLINE: {exc}")
+            return work_local
 
 
     # =========================
@@ -1814,6 +1932,50 @@ else:
         label="📋 COPIAR REPORTE GENERAL",
         key="copy_general"
     )
+
+
+    # =========================
+    # REPORTE GENERAL PEXT
+    # =========================
+
+    st.divider()
+    st.subheader("🛠️ Reporte PEXT")
+
+    if shared_wos_pext is None:
+        st.info("Carga WOs List PEXT desde la barra lateral para generar este reporte.")
+    else:
+        pext_work = build_work_from_wos(shared_wos_pext)
+
+        if pext_work is not None:
+            pext_work = apply_online_access_and_manual_status(pext_work)
+
+            pext_text = build_whatsapp_text(
+                pext_work,
+                zona,
+                mda_salida,
+                mda_ingreso,
+                supervisor,
+                fecha_reporte,
+                filtrar_monitoreo_general=False
+            )
+
+            # Encabezado específico para distinguir el bloque.
+            pext_text = "*PEXT*\n\n" + pext_text
+
+            st.text_area(
+                "Texto PEXT para WhatsApp",
+                value=pext_text,
+                height=360,
+                key="pext_text"
+            )
+
+            st.markdown("**Copiar reporte PEXT:**")
+            copy_button(
+                pext_text,
+                label="📋 COPIAR REPORTE PEXT",
+                key="copy_pext"
+            )
+
 
     # =========================
     # SALIDA POR DEPARTAMENTO
